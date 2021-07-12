@@ -1,0 +1,41 @@
+cabal-version:       >=1.10
+name:                polycheck
+version:             0.1.0.0
+license-file:        LICENSE
+author:              Zhuyang Wang
+maintainer:          Zhuyang Wang <hawnzug@gmail.com>
+build-type:          Simple
+extra-doc-files:     README.md
+
+library
+  ghc-options: -O2
+  exposed-modules:
+    Test.PolyCheck.TH
+    Test.PolyCheck.TH.State
+    Test.PolyCheck.TH.TypeExp
+  other-modules:
+  build-depends:
+      base == 4.*
+    , template-haskell
+    , th-abstraction
+    , containers
+    , QuickCheck
+  default-language: Haskell2010
+  default-extensions:
+    LambdaCase
+    NamedFieldPuns
+    TemplateHaskell
+    TupleSections
+
+test-suite test
+  hs-source-dirs: tests
+  default-language: Haskell2010
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+    StrictlyPositive
+  build-depends:
+      base == 4.*
+    , polycheck
+    , template-haskell
+    , QuickCheck
