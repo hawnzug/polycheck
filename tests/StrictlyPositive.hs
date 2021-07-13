@@ -2,8 +2,8 @@
 {-# LANGUAGE LambdaCase #-}
 module StrictlyPositive where
 
-import Test.PolyCheck.TH
 import Test.PolyCheck.TH.State
+import Test.PolyCheck.TH.Predicate
 
 import Control.Monad
 import Data.Functor.Const

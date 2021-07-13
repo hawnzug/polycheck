@@ -3,6 +3,7 @@ module Test.PolyCheck.TH.Predicate where
 import Data.Function
 import Data.Functor
 import Data.Traversable (for)
+import qualified Data.Map.Strict as Map
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import Language.Haskell.TH.Datatype
@@ -43,6 +44,42 @@ tvOccursCon a (datatypeName, args) = do
   tvs <- traverse (tvOccurs a) args
   pure $ or $ zipWith (&&) varOccurs tvs
   where anyM f xs = or <$> traverse f xs
+
+isEmpty :: Type -> Q Bool
+isEmpty = go where
+  go = \case
+    VarT _ -> fail "Cannot determine the emptiness for open types"
+    ConT name -> isEmptyCon (name, [])
+    TupleT 0 -> pure False
+    AppT (AppT ArrowT arg) ret -> do
+      e1 <- go arg
+      e2 <- go ret
+      pure (not e1 && e2)
+    t@(AppT _ _) -> do
+      let (constr, args) = flattenApps t
+      case constr of
+        TupleT n -> or <$> traverse go args
+        ListT -> pure False
+        ConT datatypeName -> isEmptyCon (datatypeName, args)
+        _ -> fail "Not supported"
+    _ -> fail "Not supported"
+
+isEmptyCon :: (Name, [Type]) -> Q Bool
+isEmptyCon (datatypeName, args) = do
+  info <- reifyDT datatypeName
+  let vars = info & datatypeVars <&> tvName
+  let cons = info & datatypeCons
+  let subst = applySubstitution $ Map.fromList $ zip vars args
+  getEmptiness datatypeName >>= \case
+    Just e -> pure e
+    Nothing -> do
+      putEmptiness datatypeName True
+      e <- allM (anyM isEmpty . (subst . constructorFields)) cons
+      putEmptiness datatypeName e
+      pure e
+  where
+    anyM f xs = or <$> traverse f xs
+    allM f xs = and <$> traverse f xs
 
 tvStrictlyPositive :: Name -> Type -> Q Bool
 tvStrictlyPositive a = go where

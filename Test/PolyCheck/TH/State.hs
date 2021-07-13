@@ -40,6 +40,7 @@ data State = State
   , fillm :: Map Key Dec
   , tvOccur :: Map Name [Bool]
   , tvSP :: Map Name [Bool]
+  , emptiness :: Map Name Bool
   }
 
 qStateInit :: Name -> String -> Q ()
@@ -54,6 +55,7 @@ qStateInit a func = qPutQ $ State
   , fillm = Map.empty
   , tvOccur = Map.empty
   , tvSP = Map.empty
+  , emptiness = Map.empty
   }
 
 isLastTV :: Name -> Q Bool
@@ -171,3 +173,13 @@ putTvSP :: Name -> [Bool] -> Q ()
 putTvSP k v = do
   Just s@State{tvSP} <- qGetQ
   qPutQ $ s{tvSP = Map.insert k v tvSP}
+
+getEmptiness :: Name -> Q (Maybe Bool)
+getEmptiness k = do
+  Just s@State{emptiness} <- qGetQ
+  pure $ Map.lookup k emptiness
+
+putEmptiness :: Name -> Bool -> Q ()
+putEmptiness k v = do
+  Just s@State{emptiness} <- qGetQ
+  qPutQ $ s{emptiness = Map.insert k v emptiness}
