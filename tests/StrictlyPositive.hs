@@ -70,7 +70,9 @@ main = do
 
   empty [t| Void |]
   empty [t| () -> Void |]
+  empty [t| Int -> Void |]
   empty [t| (Bool, Void) |]
+  empty [t| ((Int, Int), Void) |]
   empty [t| (Void, [Void]) |]
   empty [t| Either Void Void |]
   empty [t| T1 Void |]

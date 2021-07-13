@@ -88,9 +88,13 @@ getDatatypeInfo name =
 -- 'getDatatypeInfo' to lookup those types maintained by the global state.
 reifyDT :: Name -> Q DatatypeInfo
 reifyDT name = getDatatypeInfo name
-  >>= maybe (reifyDatatype name) pure
+  >>= maybe (reifyDatatypePrim name) pure
   >>= resolveInfo
   where
+    reifyDatatypePrim name = reify name >>= \case
+      -- Assuming all primitive types are nonempty
+      PrimTyConI{} -> reifyDatatype ''Bool
+      _ -> reifyDatatype name
     resolveInfo info = do
       let cons = info & datatypeCons
       cons' <- traverse resolveFields cons
