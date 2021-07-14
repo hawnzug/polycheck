@@ -2,9 +2,10 @@
 {-# LANGUAGE LambdaCase #-}
 module StrictlyPositive where
 
-import Test.PolyCheck.TH
 import Test.PolyCheck.TH.State
+import Test.PolyCheck.TH.Predicate
 
+import Data.Void (Void)
 import Control.Monad
 import Data.Functor.Const
 import Language.Haskell.TH
@@ -35,6 +36,11 @@ main = do
         test t >>= \case
           True -> fail $ pprint t <> ": strictly positive"
           False -> pure ()
+  let empty qt = do
+        t <- qt
+        isEmpty t >>= \case
+          True -> pure ()
+          False -> fail $ pprint t <> ": nonempty"
   let a = varT na
 
   occ [t| T2 $a |]
@@ -61,5 +67,14 @@ main = do
   neg [t| Maybe (T0 $a) |]
   neg [t| Const (T0 $a) $a |]
   neg [t| Either $a (Maybe (T1 (Maybe $a))) |]
+
+  empty [t| Void |]
+  empty [t| () -> Void |]
+  empty [t| Int -> Void |]
+  empty [t| (Bool, Void) |]
+  empty [t| ((Int, Int), Void) |]
+  empty [t| (Void, [Void]) |]
+  empty [t| Either Void Void |]
+  empty [t| T1 Void |]
 
   pure []
