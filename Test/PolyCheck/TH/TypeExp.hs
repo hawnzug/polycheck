@@ -33,11 +33,11 @@ appCon c 0 e = conE c
 appCon c 1 e = appE (conE c) e
 appCon c n e = foldl appE (conE c) ((\i -> [| $(proji n i) $e |]) <$> [0..n-1])
 
-destructPolyFn :: Type -> Q ([Name], Type, [Type], Type)
+destructPolyFn :: Type -> Q ([Name], [Type], Type)
 destructPolyFn (ForallT tvars _ ty) =
   let names = tvName <$> tvars in
   let (ps, r) = go ty in
-  pure (names, ty, ps, r)
+  pure (names, ps, r)
   where
     go (AppT (AppT ArrowT t) rest) =
       let (ts, r) = go rest in (t:ts, r)
@@ -74,6 +74,10 @@ flattenArrows :: Type -> ([Type], Type)
 flattenArrows = go [] where
   go args (AppT (AppT ArrowT arg) rest) = go (arg:args) rest
   go args t = (args, t)
+
+appArrows :: ([Type], Type) -> Type
+appArrows (params, ret) = foldr f ret params
+  where f p r = (AppT (AppT ArrowT p) r)
 
 -- | Create a normal data constructor
 makeCon :: Name -> [Type] -> Con

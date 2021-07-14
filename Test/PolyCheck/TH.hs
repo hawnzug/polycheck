@@ -29,9 +29,10 @@ import Data.Traversable (for)
 monomorphic :: Name -> Q [Dec]
 monomorphic func = do
   -- reifyType for template-haskell >= 2.11 <= 2.15
+  runIO $ putStrLn $ "monomorphising " <> nameBase func
   let reifyType name = reify name <&> \(VarI _ t _) -> t
   ty <- reifyType func >>= resolveTypeSynonyms
-  (vars, funcType, params, returnType) <- destructPolyFn ty
+  (vars, params, returnType) <- destructPolyFn ty
   qStateInit (last vars) (nameBase func)
   let t = case params of
         [x] -> x
@@ -49,16 +50,26 @@ monomorphic func = do
   let subst = applySubstitution $ Map.fromList $ zip vars (ConT <$> logTypeNames)
   genMonoType (length params) monoTypeName monoTypeConName fillNames res (subst t)
   genMonoFun (length params) func monoName monoTypeName monoTypeConName (subst returnType)
-  genEmptyFun func vars funcType
+  emptyName <- genEmptyFun func vars (params, returnType)
+  runIO $ putStrLn $ nameBase func <> " is monomorphised to " <>
+    nameBase monoName <>
+    (maybe "" ((" and " <>) . nameBase) emptyName)
   concat <$> sequence [getLogDecls, getResDecls, getFillDecls, getDecls]
 
-genEmptyFun :: Name -> [Name] -> Type -> Q ()
-genEmptyFun func vars ty = do
-  let emptyName = mkName $ (nameBase func) <> "_empty"
-  let tyEmpty = applySubstitution (Map.fromList $ vars <&> (, ConT ''Void)) ty
-  let sig = SigD emptyName tyEmpty
-  let decl = ValD (VarP emptyName) (NormalB (VarE func)) []
-  putDecls [sig, decl]
+genEmptyFun :: Name -> [Name] -> ([Type], Type) -> Q (Maybe Name)
+genEmptyFun func vars (params, ret) = do
+  let emptySubst = Map.fromList $ vars <&> (, ConT ''Void)
+  let params' = applySubstitution emptySubst params
+  let ret' = applySubstitution emptySubst ret
+  needed <- not <$> or <$> traverse isEmpty params'
+  if needed then do
+    let emptyName = mkName $ (nameBase func) <> "_empty"
+    let sig = SigD emptyName (appArrows (params', ret'))
+    let decl = ValD (VarP emptyName) (NormalB (VarE func)) []
+    putDecls [sig, decl]
+    pure $ Just emptyName
+  else
+    pure Nothing
 
 -- | Calculate the log type of @t@ w.r.t. @a@
 logt :: Name -> Type -> Q Type
