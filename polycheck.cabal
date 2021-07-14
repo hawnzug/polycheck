@@ -13,6 +13,7 @@ library
     Test.PolyCheck.TH
     Test.PolyCheck.TH.State
     Test.PolyCheck.TH.TypeExp
+    Test.PolyCheck.TH.Predicate
   other-modules:
   build-depends:
       base == 4.*
