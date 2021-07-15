@@ -169,37 +169,40 @@ residual as substLog substArg = \case
     case constr of
       TupleT _ -> mkTupleT <$> traverse (residual as substLog substArg) params
       ListT -> let [param] = params in [t| [$(residual as substLog substArg param)] |]
-      ConT conName -> getResDec (conName, params) >>= \case
-        Just (DataD _ name _ _ _ _) -> pure $ foldl AppT (ConT name) params
-        Nothing -> do
-          con <- resTypeRequired as (conName, params) >>= \case
-            True -> resCon as substLog substArg (conName, params)
-            False -> pure constr
-          foldl AppT con <$> traverse (residual as substLog substArg) params
+      ConT typeName -> resCon as substLog substArg (typeName, params)
       _ -> fail "Not supported"
   _ -> fail "Not supported"
 
 resCon :: [Name] -> (Type -> Type) -> (Type -> Type) -> (Name, [Type]) -> Q Type
-resCon as substLog substArg (typeName, args) = do
-  info <- reifyDT typeName
-  resTypeName <- newUniqueName $ nameBase typeName <> "Res"
-  putResDec (typeName, substArg <$> args) $ DataD [] resTypeName [] Nothing [] []
-  let typeVars = info & datatypeVars <&> tvName
-  constr <- residualConstructor info typeVars
-  let decl = DataD [] resTypeName (plainTV <$> typeVars) Nothing constr
-        [DerivClause Nothing (ConT <$> [''Show, ''Generic])]
-  putResDec (typeName, substArg <$> args) decl
-  resInfo <- normalizeDec decl
-  let ctx = traverse (\a -> [t| Arbitrary $(varT a) |]) typeVars
-  let typ = appT (conT ''Arbitrary) $
-            foldl appT (conT resTypeName) (varT <$> typeVars)
-  let monoType = foldl appT (conT typeName) (typeVars $> [t| () |])
-  let f = toRes info resInfo
-  let dec = funD 'arbitrary
-        [clause [] (normalB [| (arbitrary :: Gen $monoType) >>= $f |]) []]
-  putDecls . pure =<< instanceD ctx typ [dec]
-  conT resTypeName
+resCon as substLog substArg (typeName, args) =
+  getResTypeName (typeName, args) >>= \case
+    Just name -> pure $ foldl AppT (ConT name) args
+    Nothing -> do
+      resType <- resTypeRequired as (typeName, args) >>= \case
+        True -> new
+        False -> conT typeName
+      resArgs <- traverse (residual as substLog substArg) args
+      pure $ foldl AppT resType resArgs
   where
+    new = do
+      info <- reifyDT typeName
+      let argsSubsted = substArg <$> args
+      resTypeName <- mkResTypeName (typeName, argsSubsted)
+      let typeVars = info & datatypeVars <&> tvName
+      constr <- residualConstructor info typeVars
+      let decl = DataD [] resTypeName (plainTV <$> typeVars) Nothing constr
+              [DerivClause Nothing (ConT <$> [''Show, ''Generic])]
+      putResDec (typeName, argsSubsted) decl
+      resInfo <- normalizeDec decl
+      let ctx = traverse (\a -> [t| Arbitrary $(varT a) |]) typeVars
+      let typ = appT (conT ''Arbitrary) $
+                  foldl appT (conT resTypeName) (varT <$> typeVars)
+      let monoType = foldl appT (conT typeName) (typeVars $> [t| () |])
+      let f = toRes info resInfo
+      let dec = funD 'arbitrary
+              [clause [] (normalB [| (arbitrary :: Gen $monoType) >>= $f |]) []]
+      putDecls . pure =<< instanceD ctx typ [dec]
+      conT resTypeName
     residualConstructor info typeVars = do
       let substLog' = applySubstitution $ Map.fromList $ zip typeVars (substLog <$> args)
       let substArg' = applySubstitution $ Map.fromList $ zip typeVars (substArg <$> args)

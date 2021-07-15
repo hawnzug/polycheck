@@ -147,10 +147,19 @@ getResDec k = do
   Just s@State{resm} <- qGetQ
   pure $ Map.lookup k resm
 
+getResTypeName :: (Name, [Type]) -> Q (Maybe Name)
+getResTypeName k = getResDec k <&> (<&> (\(DataD _ name _ _ _ _) -> name))
+
 putResDec :: (Name, [Type]) -> Dec -> Q ()
 putResDec k v = do
   Just s@State{resm} <- qGetQ
   qPutQ $ s{resm = Map.insert k v resm}
+
+mkResTypeName :: (Name, [Type]) -> Q Name
+mkResTypeName (typeName, args) = do
+  resTypeName <- newUniqueName $ nameBase typeName <> "Res"
+  putResDec (typeName, args) $ DataD [] resTypeName [] Nothing [] []
+  pure resTypeName
 
 getFillDecls :: Q [Dec]
 getFillDecls = do
