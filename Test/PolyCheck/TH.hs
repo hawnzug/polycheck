@@ -30,7 +30,7 @@ monomorphic :: Name -> Q [Dec]
 monomorphic name = do
   (vars, params, returnType) <- reifyType name >>= resolveTypeSynonyms >>= destructFnType
   qStateInit (last vars) nameStr
-  let t = appTuple params
+  let t = mkTupleT params
   let (logTypeNames, logConNames, fillNames) = unzip3 $ vars <&> \var ->
         let make s = mkName $ s <> nameStr <> nameBase var in
         (make "TestLog", make "TestLogCon", make "testfill")
@@ -57,14 +57,14 @@ genLogs t vars typeNames conNames =
     go (a, typeName, conName) = do
       log <- logt a t
       putLogDec (a, a, []) $
-          DataD [] typeName [] Nothing [makeCon conName [log]]
+          DataD [] typeName [] Nothing [mkConD conName [log]]
           [DerivClause Nothing [ConT ''Eq, ConT ''Show, ConT ''Generic]]
       putDecls =<< [d| instance CoArbitrary $(conT typeName) |]
 
 genRes :: [Type] -> [Name] -> Type -> Q Type
-genRes logs as t = do
-  let subst = applySubstitution . Map.fromList . zip as
-  residual as (subst logs) id t <&> subst (repeat $ TupleT 0)
+genRes logs vars t = do
+  let subst = applySubstitution . Map.fromList . zip vars
+  residual vars (subst logs) id t <&> subst (repeat $ TupleT 0)
 
 genFill :: Type -> [Name] -> [Name] -> [Name] -> Q ()
 genFill t vars fillNames conNames =
@@ -72,8 +72,9 @@ genFill t vars fillNames conNames =
   where
     go (a, fillName, conName) = do
       x <- newName "e"
-      fillDecl <- funD fillName $ pure $
-              clause [varP x] (normalB (fill a t (varE x) (conE conName))) []
+      fillDecl <-
+        funD fillName $
+        [clause [varP x] (normalB $ fill a t (varE x) (conE conName)) []]
       putFillDecl (a, fillName, []) fillDecl
 
 genMonoType :: Int -> Name -> Name -> [Name] -> Type -> Type -> Q ()
@@ -89,7 +90,7 @@ genMonoType numArgs monoTypeName monoTypeConName fillNames resType t = do
   putDecls $ monoTypeDecl : instDecl
   where
     monoTypeDecl = NewtypeD [] monoTypeName [] Nothing
-      (makeCon monoTypeConName [t]) []
+      (mkConD monoTypeConName [t]) []
     fills = foldl (\f g -> [| $f . $g |])
       (conE monoTypeConName) (varE <$> reverse fillNames)
     showMono x = case numArgs of
@@ -119,11 +120,11 @@ logt a (TupleT 0) = [t| Void |]
 logt a t@(AppT (AppT ArrowT _) _) = do
   let (args, ret) = flattenArrows t
   logret <- logt a ret
-  pure $ appTuple (args ++ [logret])
+  pure $ mkTupleT (args ++ [logret])
 logt a t@(AppT _ _) = do
   let (constr, params) = flattenApps t
   case constr of
-    TupleT n -> appEithers <$> traverse (logt a) params
+    TupleT n -> mkEithersT <$> traverse (logt a) params
     ListT -> let [param] = params in [t| ListLog $(logt a param) |]
     ConT conName -> logCon a (conName, params)
     _ -> fail "Not supported"
@@ -144,7 +145,7 @@ logCon a (datatypeName, args) =
       forM (datatypeCons info) $ \con -> do
         logFields <- traverse (logt a . subst) (constructorFields con)
         name <- newUniqueName $ nameBase (constructorName con) <> "LogC"
-        pure $ makeCon name [appEithers logFields]
+        pure $ mkConD name [mkEithersT logFields]
     putDecls =<< [d| instance CoArbitrary $(conT logTypeName) |]
     putLogDec (a, datatypeName, args) $
       DataD [] logTypeName [] Nothing logCons
@@ -178,7 +179,7 @@ resCon as substLog substArg (datatypeName, args) = do
       forM (info & datatypeCons) $ \con -> do
         fields <- traverse (residual typeVars substLog' substArg') (con & constructorFields)
         name <- newUniqueName $ (con & constructorName & nameBase) <> "ResC"
-        pure $ makeCon name fields
+        pure $ mkConD name fields
     toRes info resInfo = do
       x <- newName "x"
       lamE [varP x] $ caseE (varE x) $ makeBranch <$> zip
@@ -210,7 +211,7 @@ residual as substLog substArg = \case
   t@(AppT _ _) -> do
     let (constr, params) = flattenApps t
     case constr of
-      TupleT n -> appTuple <$> traverse (residual as substLog substArg) params
+      TupleT n -> mkTupleT <$> traverse (residual as substLog substArg) params
       ListT -> let [param] = params in [t| [$(residual as substLog substArg param)] |]
       ConT conName -> getResType (conName, params) >>= \case
         Just (DataD _ name _ _ _ _) -> pure $ foldl AppT (ConT name) params
@@ -254,7 +255,7 @@ fillCon a (datatypeName, args) e f = do
       let fields = con & constructorFields
       let conName = con & constructorName
       vars <- sequence (fields $> newName "x")
-      let t' = appTuple fields
+      let t' = mkTupleT fields
       let e' = case vars of
             [] -> conE '()
             [v] -> varE v
@@ -262,7 +263,7 @@ fillCon a (datatypeName, args) e f = do
       let re = fill a t' e' [| $(varE vf) . $(conE logConName) |]
       r <- newName "r"
       let body = [| let $(varP r) = $re in
-                     $(appCon conName (length fields) (varE r))
+                     $(mkConE conName (length fields) (varE r))
                   |]
       match (conP resConName (varP <$> vars)) (normalB body) []
 
