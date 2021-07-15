@@ -27,29 +27,88 @@ import Data.Traversable (for)
 -- A monomorphized function 'prop_mono' will be generated, and can be use in
 -- @quickCheck prop_mono@.
 monomorphic :: Name -> Q [Dec]
-monomorphic func = do
-  -- reifyType for template-haskell >= 2.11 <= 2.15
-  let reifyType name = reify name <&> \(VarI _ t _) -> t
-  ty <- reifyType func >>= resolveTypeSynonyms
-  (vars, params, returnType) <- destructFnType ty
-  qStateInit (last vars) (nameBase func)
-  let t = case params of
-        [x] -> x
-        _ -> foldl AppT (TupleT $ length params) params
+monomorphic name = do
+  (vars, params, returnType) <- reifyType name >>= resolveTypeSynonyms >>= destructFnType
+  qStateInit (last vars) nameStr
+  let t = appTuple params
   let (logTypeNames, logConNames, fillNames) = unzip3 $ vars <&> \var ->
-        let make s = mkName $ s <> nameBase func <> nameBase var in
+        let make s = mkName $ s <> nameStr <> nameBase var in
         (make "TestLog", make "TestLogCon", make "testfill")
-  mapM_ (genLogs t) $ zip3 vars logTypeNames logConNames
+  genLogs t vars logTypeNames logConNames
   substLogDecs vars logTypeNames
   res <- genRes (ConT <$> logTypeNames) vars t
-  mapM_ (genFill t) $ zip3 vars fillNames logConNames
-  let monoName = mkName $ nameBase func <> "_mono"
-  let monoTypeName = mkName $ "Mono" <> nameBase func
-  let monoTypeConName = mkName $ "MonoC" <> nameBase func
+  genFill t vars fillNames logConNames
   let subst = applySubstitution $ Map.fromList $ zip vars (ConT <$> logTypeNames)
   genMonoType (length params) monoTypeName monoTypeConName fillNames res (subst t)
-  genMonoFun (length params) func monoName monoTypeName monoTypeConName (subst returnType)
+  genMonoFun (length params) name monoName monoTypeName monoTypeConName (subst returnType)
   concat <$> sequence [getLogDecls, getResDecls, getFillDecls, getDecls]
+  where
+    -- reifyType for template-haskell >= 2.11 <= 2.15
+    reifyType name = reify name <&> \(VarI _ t _) -> t
+    nameStr = nameBase name
+    monoName = mkName $ nameStr <> "_mono"
+    monoTypeName = mkName $ "Mono" <> nameStr
+    monoTypeConName = mkName $ "MonoC" <> nameStr
+
+genLogs :: Type -> [Name] -> [Name] -> [Name] -> Q ()
+genLogs t vars typeNames conNames =
+  mapM_ go $ zip3 vars typeNames conNames
+  where
+    go (a, typeName, conName) = do
+      log <- logt a t
+      putLogDec (a, a, []) $
+          DataD [] typeName [] Nothing [makeCon conName [log]]
+          [DerivClause Nothing [ConT ''Eq, ConT ''Show, ConT ''Generic]]
+      putDecls =<< [d| instance CoArbitrary $(conT typeName) |]
+
+genRes :: [Type] -> [Name] -> Type -> Q Type
+genRes logs as t = do
+  let subst = applySubstitution . Map.fromList . zip as
+  residual as (subst logs) id t <&> subst (repeat $ TupleT 0)
+
+genFill :: Type -> [Name] -> [Name] -> [Name] -> Q ()
+genFill t vars fillNames conNames =
+  mapM_ go $ zip3 vars fillNames conNames
+  where
+    go (a, fillName, conName) = do
+      x <- newName "e"
+      fillDecl <- funD fillName $ pure $
+              clause [varP x] (normalB (fill a t (varE x) (conE conName))) []
+      putFillDecl (a, fillName, []) fillDecl
+
+genMonoType :: Int -> Name -> Name -> [Name] -> Type -> Type -> Q ()
+genMonoType numArgs monoTypeName monoTypeConName fillNames resType t = do
+  x <- newName "x"
+  instDecl <-
+    [d|
+     instance Arbitrary $(conT monoTypeName) where
+       arbitrary = $fills <$> (arbitrary :: Gen $(pure resType))
+     instance Show $(conT monoTypeName) where
+       show $(conP monoTypeConName [varP x]) = $(showMono x)
+     |]
+  putDecls $ monoTypeDecl : instDecl
+  where
+    monoTypeDecl = NewtypeD [] monoTypeName [] Nothing
+      (makeCon monoTypeConName [t]) []
+    fills = foldl (\f g -> [| $f . $g |])
+      (conE monoTypeConName) (varE <$> reverse fillNames)
+    showMono x = case numArgs of
+      1 -> [| show $(varE x) |]
+      n -> let xs = [0..n-1] <&> \i -> [| show ($(proji n i) $(varE x)) |] in
+           [| concat $ intersperse "\n" $(listE xs) |]
+
+genMonoFun :: Int -> Name -> Name -> Name -> Name -> Type -> Q ()
+genMonoFun numArgs func monoName monoTypeName monoTypeConName returnType = do
+  monoSig <- sigD monoName
+    [t| $(conT monoTypeName) -> $(pure returnType) |]
+  x <- newName "x"
+  let body = case numArgs of
+        1 -> [| $(varE func) $(varE x) |]
+        n -> foldl appE (varE func) $ [0..n-1] <&>
+             \i -> [| $(proji n i) $(varE x) |]
+  monoDecl <- funD monoName
+    [clause [conP monoTypeConName [varP x]] (normalB body) []]
+  putDecls [monoSig, monoDecl]
 
 -- | Calculate the log type of @t@ w.r.t. @a@
 logt :: Name -> Type -> Q Type
@@ -244,60 +303,6 @@ fill a t@(AppT _ _) e f = do
       Nothing -> fillCon a (conName, params) e f
     _ -> fail "Not supported"
 fill a _ e f = fail "Not supported"
-
-genLogs :: Type -> (Name, Name, Name) -> Q ()
-genLogs t (a, datatypeName, conName) = do
-  log <- logt a t
-  putLogDec (a, a, []) $
-    DataD [] datatypeName [] Nothing [makeCon conName [log]]
-    [DerivClause Nothing [ConT ''Eq, ConT ''Show, ConT ''Generic]]
-  putDecls =<< [d| instance CoArbitrary $(conT datatypeName) |]
-
-genRes :: [Type] -> [Name] -> Type -> Q Type
-genRes logs as t = do
-  let subst = applySubstitution . Map.fromList . zip as
-  residual as (subst logs) id t <&> subst (repeat $ TupleT 0)
-
-genFill :: Type -> (Name, Name, Name) -> Q ()
-genFill t (a, fillName, logConName) = do
-  x <- newName "e"
-  fillDecl <- funD fillName $ pure $
-        clause [varP x] (normalB (fill a t (varE x) (conE logConName))) []
-  putFillDecl (a, fillName, []) fillDecl
-
-genMonoType :: Int -> Name -> Name -> [Name] -> Type -> Type -> Q ()
-genMonoType numArgs monoTypeName monoTypeConName fillNames resType t = do
-  x <- newName "x"
-  instDecl <-
-    [d|
-     instance Arbitrary $(conT monoTypeName) where
-       arbitrary = $fills <$> (arbitrary :: Gen $(pure resType))
-     instance Show $(conT monoTypeName) where
-       show $(conP monoTypeConName [varP x]) = $(showMono x)
-     |]
-  putDecls $ monoTypeDecl : instDecl
-  where
-    monoTypeDecl = NewtypeD [] monoTypeName [] Nothing
-      (makeCon monoTypeConName [t]) []
-    fills = foldl (\f g -> [| $f . $g |])
-      (conE monoTypeConName) (varE <$> reverse fillNames)
-    showMono x = case numArgs of
-      1 -> [| show $(varE x) |]
-      n -> let xs = [0..n-1] <&> \i -> [| show ($(proji n i) $(varE x)) |] in
-           [| concat $ intersperse "\n" $(listE xs) |]
-
-genMonoFun :: Int -> Name -> Name -> Name -> Name -> Type -> Q ()
-genMonoFun numArgs func monoName monoTypeName monoTypeConName returnType = do
-  monoSig <- sigD monoName
-    [t| $(conT monoTypeName) -> $(pure returnType) |]
-  x <- newName "x"
-  let body = case numArgs of
-        1 -> [| $(varE func) $(varE x) |]
-        n -> foldl appE (varE func) $ [0..n-1] <&>
-             \i -> [| $(proji n i) $(varE x) |]
-  monoDecl <- funD monoName
-    [clause [conP monoTypeConName [varP x]] (normalB body) []]
-  putDecls [monoSig, monoDecl]
 
 instance CoArbitrary Void where
   coarbitrary = absurd
