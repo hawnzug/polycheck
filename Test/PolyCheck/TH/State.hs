@@ -142,13 +142,13 @@ getResDecls = do
   Just s@State{resm} <- qGetQ
   pure $ Map.elems resm
 
-getResType :: (Name, [Type]) -> Q (Maybe Dec)
-getResType k = do
+getResDec :: (Name, [Type]) -> Q (Maybe Dec)
+getResDec k = do
   Just s@State{resm} <- qGetQ
   pure $ Map.lookup k resm
 
-putResType :: (Name, [Type]) -> Dec -> Q ()
-putResType k v = do
+putResDec :: (Name, [Type]) -> Dec -> Q ()
+putResDec k v = do
   Just s@State{resm} <- qGetQ
   qPutQ $ s{resm = Map.insert k v resm}
 

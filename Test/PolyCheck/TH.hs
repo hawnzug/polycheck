@@ -124,7 +124,7 @@ logt a t@(AppT (AppT ArrowT _) _) = do
 logt a t@(AppT _ _) = do
   let (constr, params) = flattenApps t
   case constr of
-    TupleT n -> mkEithersT <$> traverse (logt a) params
+    TupleT _ -> mkEithersT <$> traverse (logt a) params
     ListT -> let [param] = params in [t| ListLog $(logt a param) |]
     ConT typeName -> logCon a (typeName, params)
     _ -> fail "Not supported"
@@ -167,9 +167,9 @@ residual as substLog substArg = \case
   t@(AppT _ _) -> do
     let (constr, params) = flattenApps t
     case constr of
-      TupleT n -> mkTupleT <$> traverse (residual as substLog substArg) params
+      TupleT _ -> mkTupleT <$> traverse (residual as substLog substArg) params
       ListT -> let [param] = params in [t| [$(residual as substLog substArg param)] |]
-      ConT conName -> getResType (conName, params) >>= \case
+      ConT conName -> getResDec (conName, params) >>= \case
         Just (DataD _ name _ _ _ _) -> pure $ foldl AppT (ConT name) params
         Nothing -> do
           con <- resTypeRequired as (conName, params) >>= \case
@@ -180,20 +180,20 @@ residual as substLog substArg = \case
   _ -> fail "Not supported"
 
 resCon :: [Name] -> (Type -> Type) -> (Type -> Type) -> (Name, [Type]) -> Q Type
-resCon as substLog substArg (datatypeName, args) = do
-  info <- reifyDT datatypeName
-  resTypeName <- newUniqueName $ nameBase datatypeName <> "Res"
-  putResType (datatypeName, substArg <$> args) $ DataD [] resTypeName [] Nothing [] []
+resCon as substLog substArg (typeName, args) = do
+  info <- reifyDT typeName
+  resTypeName <- newUniqueName $ nameBase typeName <> "Res"
+  putResDec (typeName, substArg <$> args) $ DataD [] resTypeName [] Nothing [] []
   let typeVars = info & datatypeVars <&> tvName
   constr <- residualConstructor info typeVars
   let decl = DataD [] resTypeName (plainTV <$> typeVars) Nothing constr
         [DerivClause Nothing (ConT <$> [''Show, ''Generic])]
-  putResType (datatypeName, substArg <$> args) decl
+  putResDec (typeName, substArg <$> args) decl
   resInfo <- normalizeDec decl
   let ctx = traverse (\a -> [t| Arbitrary $(varT a) |]) typeVars
   let typ = appT (conT ''Arbitrary) $
             foldl appT (conT resTypeName) (varT <$> typeVars)
-  let monoType = foldl appT (conT datatypeName) (typeVars $> [t| () |])
+  let monoType = foldl appT (conT typeName) (typeVars $> [t| () |])
   let f = toRes info resInfo
   let dec = funD 'arbitrary
         [clause [] (normalB [| (arbitrary :: Gen $monoType) >>= $f |]) []]
@@ -260,18 +260,18 @@ fill a t@(AppT _ _) e f = do
 fill a _ e f = fail "Not supported"
 
 fillCon :: Name -> (Name, [Type]) -> Q Exp -> Q Exp -> Q Exp
-fillCon a (datatypeName, args) e f = do
-  fillName <- newUniqueName $ "fill_" <> nameBase datatypeName
-  putFillDecl (a, datatypeName, args) $ FunD fillName []
+fillCon a (typeName, args) e f = do
+  fillName <- newUniqueName $ "fill_" <> nameBase typeName
+  putFillDecl (a, typeName, args) $ FunD fillName []
   fun <- makeFun fillName
-  putFillDecl (a, datatypeName, args) fun
+  putFillDecl (a, typeName, args) fun
   [| $(varE fillName) $e $f |]
   where
     makeFun fillName = do
-      info <- reifyDT datatypeName
-      logInfo <- getLogDec (a, datatypeName, args)
+      info <- reifyDT typeName
+      logInfo <- getLogDec (a, typeName, args)
         >>= maybe (pure info) normalizeDec
-      resInfo <- getResType (datatypeName, args)
+      resInfo <- getResDec (typeName, args)
         >>= maybe (pure info) normalizeDec
       isLast <- isLastTV a
       ve <- newName "e"
