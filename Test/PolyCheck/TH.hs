@@ -126,31 +126,58 @@ logt a t@(AppT _ _) = do
   case constr of
     TupleT n -> mkEithersT <$> traverse (logt a) params
     ListT -> let [param] = params in [t| ListLog $(logt a param) |]
-    ConT conName -> logCon a (conName, params)
+    ConT typeName -> logCon a (typeName, params)
     _ -> fail "Not supported"
 logt _ _ = fail "Not supported"
 
 logCon :: Name -> (Name, [Type]) -> Q Type
-logCon a (datatypeName, args) =
-  getLogDec (a, datatypeName, args)
-  >>= maybe new (\(DataD _ name _ _ _ _) -> conT name)
+logCon a (typeName, args) =
+  getLogType (a, typeName, args) >>= maybe new pure
   where
-  new = do
-    info <- reifyDT datatypeName
-    logTypeName <- newUniqueName $ nameBase datatypeName <> "Log"
-    putLogDec (a, datatypeName, args) $ DataD [] logTypeName [] Nothing [] []
-    logCons <-
-      let typeVars = tvName <$> datatypeVars info in
-      let subst = applySubstitution $ Map.fromList $ zip typeVars args in
-      forM (datatypeCons info) $ \con -> do
-        logFields <- traverse (logt a . subst) (constructorFields con)
-        name <- newUniqueName $ nameBase (constructorName con) <> "LogC"
-        pure $ mkConD name [mkEithersT logFields]
-    putDecls =<< [d| instance CoArbitrary $(conT logTypeName) |]
-    putLogDec (a, datatypeName, args) $
-      DataD [] logTypeName [] Nothing logCons
-      [DerivClause Nothing (ConT <$> [''Eq, ''Show, ''Generic])]
-    conT logTypeName
+    new = do
+      info <- reifyDT typeName
+      logTypeName <- mkLogTypeName (a, typeName, args)
+      logCons <-
+        let vars = tvName <$> datatypeVars info in
+        let subst = applySubstitution $ Map.fromList $ zip vars args in
+        forM (info & datatypeCons & subst) $ \con -> do
+          logFields <- traverse (logt a) (constructorFields con)
+          name <- newUniqueName $ nameBase (constructorName con) <> "LogC"
+          pure $ mkConD name [mkEithersT logFields]
+      putLogDec (a, typeName, args) $
+        DataD [] logTypeName [] Nothing logCons
+        [DerivClause Nothing (ConT <$> [''Eq, ''Show, ''Generic])]
+      putDecls =<< [d| instance CoArbitrary $(conT logTypeName) |]
+      conT logTypeName
+
+-- | Replace all the type variables that are not strictly positive by
+-- their corresponding log types.
+residual :: [Name] -- ^ All the type variables a, b, c, ...
+         -> (Type -> Type) -- ^ See 'resCon'
+         -> (Type -> Type) -- ^ See 'resCon'
+         -> Type -- ^ The type t
+         -> Q Type
+residual as substLog substArg = \case
+  t@(VarT _) -> pure t
+  t@(ConT _) -> pure t
+  t@(TupleT 0) -> pure t
+  t@(AppT (AppT ArrowT arg) ret) ->
+    [t| $(pure $ substLog arg) ->
+        $(residual as substLog substArg ret) |]
+  t@(AppT _ _) -> do
+    let (constr, params) = flattenApps t
+    case constr of
+      TupleT n -> mkTupleT <$> traverse (residual as substLog substArg) params
+      ListT -> let [param] = params in [t| [$(residual as substLog substArg param)] |]
+      ConT conName -> getResType (conName, params) >>= \case
+        Just (DataD _ name _ _ _ _) -> pure $ foldl AppT (ConT name) params
+        Nothing -> do
+          con <- resTypeRequired as (conName, params) >>= \case
+            True -> resCon as substLog substArg (conName, params)
+            False -> pure constr
+          foldl AppT con <$> traverse (residual as substLog substArg) params
+      _ -> fail "Not supported"
+  _ -> fail "Not supported"
 
 resCon :: [Name] -> (Type -> Type) -> (Type -> Type) -> (Name, [Type]) -> Q Type
 resCon as substLog substArg (datatypeName, args) = do
@@ -194,34 +221,43 @@ resCon as substLog substArg (datatypeName, args) = do
             (fields $> [| arbitrary |])
       match (conP conName (fields $> wildP)) (normalB body) []
 
--- | Replace all the type variables that are not strictly positive by
--- their corresponding log types.
-residual :: [Name] -- ^ All the type variables a, b, c, ...
-         -> (Type -> Type) -- ^ See 'resCon'
-         -> (Type -> Type) -- ^ See 'resCon'
-         -> Type -- ^ The type t
-         -> Q Type
-residual as substLog substArg = \case
-  t@(VarT _) -> pure t
-  t@(ConT _) -> pure t
-  t@(TupleT 0) -> pure t
-  t@(AppT (AppT ArrowT arg) ret) ->
-    [t| $(pure $ substLog arg) ->
-        $(residual as substLog substArg ret) |]
-  t@(AppT _ _) -> do
-    let (constr, params) = flattenApps t
-    case constr of
-      TupleT n -> mkTupleT <$> traverse (residual as substLog substArg) params
-      ListT -> let [param] = params in [t| [$(residual as substLog substArg param)] |]
-      ConT conName -> getResType (conName, params) >>= \case
-        Just (DataD _ name _ _ _ _) -> pure $ foldl AppT (ConT name) params
-        Nothing -> do
-          con <- resTypeRequired as (conName, params) >>= \case
-            True -> resCon as substLog substArg (conName, params)
-            False -> pure constr
-          foldl AppT con <$> traverse (residual as substLog substArg) params
-      _ -> fail "Not supported"
-  _ -> fail "Not supported"
+fill :: Name -- ^ The type variable a
+     -> Type -- ^ The type t
+     -> Q Exp -- ^ The skeleton e
+     -> Q Exp -- ^ The label prefix f
+     -> Q Exp
+fill a (VarT b) e f | a == b = [| $f $e |]
+fill a (VarT b) e f = e
+fill a (ConT c) e f = e
+fill a (TupleT 0) e f = [| () |]
+fill a t@(AppT (AppT ArrowT _) _) e f = do
+  let (args, ret) = flattenArrows t
+  paramNames <- traverse (const $ newName "x") args
+  let e' = foldl appE e (varE <$> paramNames)
+  y <- newName "y"
+  -- f' = f . \y -> (x1, x2, x3, y)
+  let f' = [| $f . $(lamE [varP y] (tupE $ varE <$> (paramNames <> [y]))) |]
+  lamE (varP <$> paramNames) (fill a ret e' f')
+fill a t@(AppT _ _) e f = do
+  let (constr, params) = flattenApps t
+  case constr of
+    TupleT n -> tupE $ zip [0..n-1] params <&> \(i, t) ->
+      fill a t [| $(proji n i) $e |] [| $f . $(eitheri n i) |]
+    ListT -> do
+      x <- newName "x"
+      vf <- newName "f"
+      let [param] = params
+      let r = fill a param (varE x) [| $(varE vf) . ListLogA |]
+      [| let
+           g [] $(varP vf) = []
+           g ($(varP x):xs) $(varP vf) = $r : g xs ($(varE vf) . ListLogB)
+         in g $e $f
+       |]
+    ConT conName -> getFillDecl (a, conName, params) >>= \case
+      Just (FunD name _) -> [| $(varE name) $e $f |]
+      Nothing -> fillCon a (conName, params) e f
+    _ -> fail "Not supported"
+fill a _ e f = fail "Not supported"
 
 fillCon :: Name -> (Name, [Type]) -> Q Exp -> Q Exp -> Q Exp
 fillCon a (datatypeName, args) e f = do
@@ -266,44 +302,6 @@ fillCon a (datatypeName, args) e f = do
                      $(mkConE conName (length fields) (varE r))
                   |]
       match (conP resConName (varP <$> vars)) (normalB body) []
-
-fill :: Name -- ^ The type variable a
-     -> Type -- ^ The type t
-     -> Q Exp -- ^ The skeleton e
-     -> Q Exp -- ^ The label prefix f
-     -> Q Exp
-fill a (VarT b) e f | a == b = [| $f $e |]
-fill a (VarT b) e f = e
-fill a (ConT c) e f = e
-fill a (TupleT 0) e f = [| () |]
-fill a t@(AppT (AppT ArrowT _) _) e f = do
-  let (args, ret) = flattenArrows t
-  paramNames <- traverse (const $ newName "x") args
-  let e' = foldl appE e (varE <$> paramNames)
-  y <- newName "y"
-  -- f' = f . \y -> (x1, x2, x3, y)
-  let f' = [| $f . $(lamE [varP y] (tupE $ varE <$> (paramNames <> [y]))) |]
-  lamE (varP <$> paramNames) (fill a ret e' f')
-fill a t@(AppT _ _) e f = do
-  let (constr, params) = flattenApps t
-  case constr of
-    TupleT n -> tupE $ zip [0..n-1] params <&> \(i, t) ->
-      fill a t [| $(proji n i) $e |] [| $f . $(eitheri n i) |]
-    ListT -> do
-      x <- newName "x"
-      vf <- newName "f"
-      let [param] = params
-      let r = fill a param (varE x) [| $(varE vf) . ListLogA |]
-      [| let
-           g [] $(varP vf) = []
-           g ($(varP x):xs) $(varP vf) = $r : g xs ($(varE vf) . ListLogB)
-         in g $e $f
-       |]
-    ConT conName -> getFillDecl (a, conName, params) >>= \case
-      Just (FunD name _) -> [| $(varE name) $e $f |]
-      Nothing -> fillCon a (conName, params) e f
-    _ -> fail "Not supported"
-fill a _ e f = fail "Not supported"
 
 instance CoArbitrary Void where
   coarbitrary = absurd

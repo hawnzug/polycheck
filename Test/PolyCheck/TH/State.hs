@@ -114,10 +114,19 @@ getLogDec k = do
   Just s@State{logm} <- qGetQ
   pure $ Map.lookup k logm
 
+getLogType :: Key -> Q (Maybe Type)
+getLogType k = getLogDec k <&> (<&> (\(DataD _ name _ _ _ _) -> ConT name))
+
 putLogDec :: Key -> Dec -> Q ()
-putLogDec k dec@(DataD _ name _ _ _ _) = do
+putLogDec k dec = do
   Just s@State{logm} <- qGetQ
   qPutQ $ s{logm = Map.insert k dec logm}
+
+mkLogTypeName :: Key -> Q Name
+mkLogTypeName k@(_, typeName, _) = do
+  logTypeName <- newUniqueName $ nameBase typeName <> "Log"
+  putLogDec k $ DataD [] logTypeName [] Nothing [] []
+  pure logTypeName
 
 substLogDecs :: [Name] -> [Name] -> Q ()
 substLogDecs vars datatypeNames = do
