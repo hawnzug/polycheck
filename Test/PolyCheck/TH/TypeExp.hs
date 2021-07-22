@@ -22,27 +22,31 @@ proji n i = do
   let pats = replicate i WildP <> (VarP x : replicate (n-i-1) WildP)
   pure $ LamE [TupP pats] (VarE x)
 
-appTuple :: [Type] -> Type
-appTuple [] = TupleT 0
-appTuple [t] = t
-appTuple ts = foldl AppT (TupleT $ length ts) ts
+mkTupleT :: [Type] -> Type
+mkTupleT [] = TupleT 0
+mkTupleT [t] = t
+mkTupleT ts = foldl AppT (TupleT $ length ts) ts
 
 -- C (proj1 e) (proj2 e) (proj3 e) ...
-appCon :: Name -> Int -> Q Exp -> Q Exp
-appCon c 0 e = conE c
-appCon c 1 e = appE (conE c) e
-appCon c n e = foldl appE (conE c) ((\i -> [| $(proji n i) $e |]) <$> [0..n-1])
+mkConE :: Name -> Int -> Q Exp -> Q Exp
+mkConE c 0 e = conE c
+mkConE c 1 e = appE (conE c) e
+mkConE c n e = foldl appE (conE c) ((\i -> [| $(proji n i) $e |]) <$> [0..n-1])
 
-destructFnType :: Type -> Q ([Name], [Type], Type)
-destructFnType (ForallT tvars _ ty) =
-  let names = tvName <$> tvars in
-  let (ps, r) = go ty in
-  pure (names, ps, r)
-  where
-    go (AppT (AppT ArrowT t) rest) =
-      let (ts, r) = go rest in (t:ts, r)
-    go r = ([], r)
-destructFnType _ = fail "Not supported"
+-- | Create a normal data constructor
+mkConD :: Name -> [Type] -> Con
+mkConD name cons = NormalC name ((bang, ) <$> cons)  where
+  bang = Bang NoSourceUnpackedness NoSourceStrictness
+
+{-
+[s, t, u, v]
+==>
+Either s (Either t (Either u v))
+-}
+mkEithersT :: [Type] -> Type
+mkEithersT [] = ConT ''Void
+mkEithersT ts = foldr1 f ts
+  where f a b = AppT (AppT (ConT ''Either) a) b
 
 {-
 App (App (App constr a) b) c
@@ -56,26 +60,19 @@ flattenApps = go []
     go ps constr = (constr, ps)
 
 {-
-[s, t, u, v]
-==>
-Either s (Either t (Either u v))
--}
-appEithers :: [Type] -> Type
-appEithers [] = ConT ''Void
-appEithers ts = foldr1 f ts
-  where f a b = AppT (AppT (ConT ''Either) a) b
-
-{-
 a -> b -> c -> r
 ==>
 ([a, b, c], r)
 -}
 flattenArrows :: Type -> ([Type], Type)
-flattenArrows = go [] where
-  go args (AppT (AppT ArrowT arg) rest) = go (arg:args) rest
-  go args t = (args, t)
+flattenArrows = go where
+  go (AppT (AppT ArrowT arg) rest) =
+    let (args, ret) = go rest in (arg:args, ret)
+  go ret = ([], ret)
 
--- | Create a normal data constructor
-makeCon :: Name -> [Type] -> Con
-makeCon name cons = NormalC name ((bang, ) <$> cons)  where
-  bang = Bang NoSourceUnpackedness NoSourceStrictness
+destructFnType :: Type -> Q ([Name], [Type], Type)
+destructFnType (ForallT tvars _ ty) =
+  let names = tvName <$> tvars in
+  let (ps, r) = flattenArrows ty in
+  pure (names, ps, r)
+destructFnType _ = fail "Not supported"
