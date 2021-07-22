@@ -33,7 +33,7 @@ data State = State
   { freshName :: Int
   , funcName :: String
   , lastTV :: Name
-  , decls :: [Dec]
+  , decs :: [Dec]
   , infom :: Map Name DatatypeInfo
   , logm :: Map Key Dec
   , resm :: Map (Name, [Type]) Dec
@@ -48,7 +48,7 @@ qStateInit a func = qPutQ $ State
   { freshName = 0
   , funcName = func
   , lastTV = a
-  , decls = []
+  , decs = []
   , infom = Map.empty
   , logm = Map.empty
   , resm = Map.empty
@@ -69,15 +69,15 @@ newUniqueName name = do
   qPutQ $ s{freshName = freshName + 1}
   pure $ mkName $ name <> show freshName <> funcName
 
-getDecls :: Q [Dec]
-getDecls = do
-  Just s@State{decls} <- qGetQ
-  pure decls
+getDecs :: Q [Dec]
+getDecs = do
+  Just s@State{decs} <- qGetQ
+  pure decs
 
-putDecls :: [Dec] -> Q ()
-putDecls d = do
-  Just s@State{decls} <- qGetQ
-  qPutQ $ s{decls = decls <> d}
+putDecs :: [Dec] -> Q ()
+putDecs d = do
+  Just s@State{decs} <- qGetQ
+  qPutQ $ s{decs = decs <> d}
 
 getDatatypeInfo :: Name -> Q (Maybe DatatypeInfo)
 getDatatypeInfo name =
@@ -104,8 +104,8 @@ reifyDT name = getDatatypeInfo name
       fields' <- traverse resolveTypeSynonyms fields
       pure con{constructorFields = fields'}
 
-getLogDecls :: Q [Dec]
-getLogDecls = do
+getLogDecs :: Q [Dec]
+getLogDecs = do
   Just s@State{logm} <- qGetQ
   pure $ Map.elems logm
 
@@ -137,8 +137,8 @@ substLogDecs vars datatypeNames = do
   infom' <- Map.fromList <$> traverse f (Map.elems logm')
   qPutQ $ s{infom = infom', logm = logm'}
 
-getResDecls :: Q [Dec]
-getResDecls = do
+getResDecs :: Q [Dec]
+getResDecs = do
   Just s@State{resm} <- qGetQ
   pure $ Map.elems resm
 
@@ -161,28 +161,28 @@ mkResTypeName (typeName, args) = do
   putResDec (typeName, args) $ DataD [] resTypeName [] Nothing [] []
   pure resTypeName
 
-getFillDecls :: Q [Dec]
-getFillDecls = do
+getFillDecs :: Q [Dec]
+getFillDecs = do
   Just s@State{fillm} <- qGetQ
   pure $ Map.elems fillm
 
-getFillDecl :: Key -> Q (Maybe Dec)
-getFillDecl k = do
+getFillDec :: Key -> Q (Maybe Dec)
+getFillDec k = do
   Just s@State{fillm} <- qGetQ
   pure $ Map.lookup k fillm
 
 getFillName :: Key -> Q (Maybe Name)
-getFillName k = getFillDecl k <&> (<&> (\(FunD name _) -> name))
+getFillName k = getFillDec k <&> (<&> (\(FunD name _) -> name))
 
-putFillDecl :: Key -> Dec -> Q ()
-putFillDecl k v = do
+putFillDec :: Key -> Dec -> Q ()
+putFillDec k v = do
   Just s@State{fillm} <- qGetQ
   qPutQ $ s{fillm = Map.insert k v fillm}
 
 mkFillName :: Key -> Q Name
 mkFillName k@(_, typeName, _) = do
   fillName <- newUniqueName $ "fill_" <> nameBase typeName
-  putFillDecl k $ FunD fillName []
+  putFillDec k $ FunD fillName []
   pure fillName
 
 getTvOccur :: Name -> Q (Maybe [Bool])

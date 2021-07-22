@@ -41,7 +41,7 @@ monomorphic name = do
   let subst = applySubstitution $ Map.fromList $ zip vars (ConT <$> logTypeNames)
   genMonoType (length params) monoTypeName monoTypeConName fillNames res (subst t)
   genMonoFun (length params) name monoName monoTypeName monoTypeConName (subst returnType)
-  concat <$> sequence [getLogDecls, getResDecls, getFillDecls, getDecls]
+  concat <$> sequence [getLogDecs, getResDecs, getFillDecs, getDecs]
   where
     -- reifyType for template-haskell >= 2.11 <= 2.15
     reifyType name = reify name <&> \(VarI _ t _) -> t
@@ -59,7 +59,7 @@ genLogs t vars typeNames conNames =
       putLogDec (a, a, []) $
           DataD [] typeName [] Nothing [mkConD conName [log]]
           [DerivClause Nothing [ConT ''Eq, ConT ''Show, ConT ''Generic]]
-      putDecls =<< [d| instance CoArbitrary $(conT typeName) |]
+      putDecs =<< [d| instance CoArbitrary $(conT typeName) |]
 
 genRes :: [Type] -> [Name] -> Type -> Q Type
 genRes logs vars t = do
@@ -72,24 +72,24 @@ genFill t vars fillNames conNames =
   where
     go (a, fillName, conName) = do
       x <- newName "e"
-      fillDecl <-
+      fillDec <-
         funD fillName $
         [clause [varP x] (normalB $ fill a t (varE x) (conE conName)) []]
-      putFillDecl (a, fillName, []) fillDecl
+      putFillDec (a, fillName, []) fillDec
 
 genMonoType :: Int -> Name -> Name -> [Name] -> Type -> Type -> Q ()
 genMonoType numArgs monoTypeName monoTypeConName fillNames resType t = do
   x <- newName "x"
-  instDecl <-
+  instDec <-
     [d|
      instance Arbitrary $(conT monoTypeName) where
        arbitrary = $fills <$> (arbitrary :: Gen $(pure resType))
      instance Show $(conT monoTypeName) where
        show $(conP monoTypeConName [varP x]) = $(showMono x)
      |]
-  putDecls $ monoTypeDecl : instDecl
+  putDecs $ monoTypeDec : instDec
   where
-    monoTypeDecl = NewtypeD [] monoTypeName [] Nothing
+    monoTypeDec = NewtypeD [] monoTypeName [] Nothing
       (mkConD monoTypeConName [t]) []
     fills = foldl (\f g -> [| $f . $g |])
       (conE monoTypeConName) (varE <$> reverse fillNames)
@@ -107,9 +107,9 @@ genMonoFun numArgs func monoName monoTypeName monoTypeConName returnType = do
         1 -> [| $(varE func) $(varE x) |]
         n -> foldl appE (varE func) $ [0..n-1] <&>
              \i -> [| $(proji n i) $(varE x) |]
-  monoDecl <- funD monoName
+  monoDec <- funD monoName
     [clause [conP monoTypeConName [varP x]] (normalB body) []]
-  putDecls [monoSig, monoDecl]
+  putDecs [monoSig, monoDec]
 
 -- | Calculate the log type of @t@ w.r.t. @a@
 logt :: Name -> Type -> Q Type
@@ -147,7 +147,7 @@ logCon a (typeName, args) =
       putLogDec (a, typeName, args) $
         DataD [] logTypeName [] Nothing logCons
         [DerivClause Nothing (ConT <$> [''Eq, ''Show, ''Generic])]
-      putDecls =<< [d| instance CoArbitrary $(conT logTypeName) |]
+      putDecs =<< [d| instance CoArbitrary $(conT logTypeName) |]
       conT logTypeName
 
 -- | Replace all the type variables that are not strictly positive by
@@ -190,10 +190,10 @@ resCon as substLog substArg (typeName, args) =
       resTypeName <- mkResTypeName (typeName, argsSubsted)
       let typeVars = info & datatypeVars <&> tvName
       constr <- residualConstructor info typeVars
-      let decl = DataD [] resTypeName (plainTV <$> typeVars) Nothing constr
+      let dec = DataD [] resTypeName (plainTV <$> typeVars) Nothing constr
               [DerivClause Nothing (ConT <$> [''Show, ''Generic])]
-      putResDec (typeName, argsSubsted) decl
-      resInfo <- normalizeDec decl
+      putResDec (typeName, argsSubsted) dec
+      resInfo <- normalizeDec dec
       let ctx = traverse (\a -> [t| Arbitrary $(varT a) |]) typeVars
       let typ = appT (conT ''Arbitrary) $
                   foldl appT (conT resTypeName) (varT <$> typeVars)
@@ -201,7 +201,7 @@ resCon as substLog substArg (typeName, args) =
       let f = toRes info resInfo
       let dec = funD 'arbitrary
               [clause [] (normalB [| (arbitrary :: Gen $monoType) >>= $f |]) []]
-      putDecls . pure =<< instanceD ctx typ [dec]
+      putDecs . pure =<< instanceD ctx typ [dec]
       conT resTypeName
     residualConstructor info typeVars = do
       let substLog' = applySubstitution $ Map.fromList $ zip typeVars (substLog <$> args)
@@ -269,7 +269,7 @@ fillCon (a, typeName, args) e f =
     new = do
       fillName <- mkFillName (a, typeName, args)
       fun <- makeFun fillName
-      putFillDecl (a, typeName, args) fun
+      putFillDec (a, typeName, args) fun
       [| $(varE fillName) $e $f |]
     makeFun fillName = do
       info <- reifyDT typeName
