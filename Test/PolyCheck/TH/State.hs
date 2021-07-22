@@ -171,10 +171,19 @@ getFillDecl k = do
   Just s@State{fillm} <- qGetQ
   pure $ Map.lookup k fillm
 
+getFillName :: Key -> Q (Maybe Name)
+getFillName k = getFillDecl k <&> (<&> (\(FunD name _) -> name))
+
 putFillDecl :: Key -> Dec -> Q ()
 putFillDecl k v = do
   Just s@State{fillm} <- qGetQ
   qPutQ $ s{fillm = Map.insert k v fillm}
+
+mkFillName :: Key -> Q Name
+mkFillName k@(_, typeName, _) = do
+  fillName <- newUniqueName $ "fill_" <> nameBase typeName
+  putFillDecl k $ FunD fillName []
+  pure fillName
 
 getTvOccur :: Name -> Q (Maybe [Bool])
 getTvOccur k = do

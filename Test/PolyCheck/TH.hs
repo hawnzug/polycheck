@@ -256,20 +256,21 @@ fill a t@(AppT _ _) e f = do
            g ($(varP x):xs) $(varP vf) = $r : g xs ($(varE vf) . ListLogB)
          in g $e $f
        |]
-    ConT conName -> getFillDecl (a, conName, params) >>= \case
-      Just (FunD name _) -> [| $(varE name) $e $f |]
-      Nothing -> fillCon a (conName, params) e f
+    ConT typeName -> fillCon (a, typeName, params) e f
     _ -> fail "Not supported"
 fill a _ e f = fail "Not supported"
 
-fillCon :: Name -> (Name, [Type]) -> Q Exp -> Q Exp -> Q Exp
-fillCon a (typeName, args) e f = do
-  fillName <- newUniqueName $ "fill_" <> nameBase typeName
-  putFillDecl (a, typeName, args) $ FunD fillName []
-  fun <- makeFun fillName
-  putFillDecl (a, typeName, args) fun
-  [| $(varE fillName) $e $f |]
+fillCon :: (Name, Name, [Type]) -> Q Exp -> Q Exp -> Q Exp
+fillCon (a, typeName, args) e f =
+  getFillName (a, typeName, args) >>= \case
+    Just name -> [| $(varE name) $e $f |]
+    Nothing -> new
   where
+    new = do
+      fillName <- mkFillName (a, typeName, args)
+      fun <- makeFun fillName
+      putFillDecl (a, typeName, args) fun
+      [| $(varE fillName) $e $f |]
     makeFun fillName = do
       info <- reifyDT typeName
       logInfo <- getLogDec (a, typeName, args)
