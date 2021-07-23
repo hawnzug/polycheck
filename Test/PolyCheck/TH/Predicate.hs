@@ -128,16 +128,3 @@ tvStrictlyPositiveCon a (datatypeName, args) = do
   allM f (zip3 varOccurs varSP args)
   where allM f xs = and <$> traverse f xs
         anyM f xs = or <$> traverse f xs
-
-resTypeRequired :: [Name] -> (Name, [Type]) -> Q Bool
-resTypeRequired as (datatypeName, args) = flip anyM as $ \a -> do
-  info <- reifyDT datatypeName
-  let vars = info & datatypeVars <&> tvName
-  let cons = info & datatypeCons
-  let f (var, arg) = do
-        b1 <- tvOccurs a arg
-        b2 <- allM (tvStrictlyPositive var) (concatMap constructorFields cons)
-        pure $ b1 && not b2
-  anyM f (zip vars args)
-  where allM f xs = and <$> traverse f xs
-        anyM f xs = or <$> traverse f xs

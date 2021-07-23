@@ -36,7 +36,6 @@ data State = State
   , decs :: [Dec]
   , infom :: Map Name DatatypeInfo
   , logm :: Map Key Dec
-  , resm :: Map (Name, [Type]) Dec
   , fillm :: Map Key Dec
   , tvOccur :: Map Name [Bool]
   , tvSP :: Map Name [Bool]
@@ -51,7 +50,6 @@ qStateInit a func = qPutQ $ State
   , decs = []
   , infom = Map.empty
   , logm = Map.empty
-  , resm = Map.empty
   , fillm = Map.empty
   , tvOccur = Map.empty
   , tvSP = Map.empty
@@ -136,30 +134,6 @@ substLogDecs vars datatypeNames = do
   let f dec@(DataD _ name _ _ _ _) = normalizeDec dec <&> (name,)
   infom' <- Map.fromList <$> traverse f (Map.elems logm')
   qPutQ $ s{infom = infom', logm = logm'}
-
-getResDecs :: Q [Dec]
-getResDecs = do
-  Just s@State{resm} <- qGetQ
-  pure $ Map.elems resm
-
-getResDec :: (Name, [Type]) -> Q (Maybe Dec)
-getResDec k = do
-  Just s@State{resm} <- qGetQ
-  pure $ Map.lookup k resm
-
-getResTypeName :: (Name, [Type]) -> Q (Maybe Name)
-getResTypeName k = getResDec k <&> (<&> (\(DataD _ name _ _ _ _) -> name))
-
-putResDec :: (Name, [Type]) -> Dec -> Q ()
-putResDec k v = do
-  Just s@State{resm} <- qGetQ
-  qPutQ $ s{resm = Map.insert k v resm}
-
-mkResTypeName :: (Name, [Type]) -> Q Name
-mkResTypeName (typeName, args) = do
-  resTypeName <- newUniqueName $ nameBase typeName <> "Res"
-  putResDec (typeName, args) $ DataD [] resTypeName [] Nothing [] []
-  pure resTypeName
 
 getFillDecs :: Q [Dec]
 getFillDecs = do

@@ -6,7 +6,7 @@ import Test.PolyCheck.TH.State
 import Test.PolyCheck.TH.TypeExp
 import Test.PolyCheck.TH.Predicate
 
-import Data.List (intersperse)
+import Data.List (intersperse, zip4, unzip4)
 import Data.Functor
 import Data.Function
 import Control.Monad
@@ -31,17 +31,16 @@ monomorphic name = do
   (vars, params, returnType) <- reifyType name >>= resolveTypeSynonyms >>= destructFnType
   qStateInit (last vars) nameStr
   let t = mkTupleT params
-  let (logTypeNames, logConNames, fillNames) = unzip3 $ vars <&> \var ->
+  let (logTypeNames, logConNames, skelConNames, fillNames) = unzip4 $ vars <&> \var ->
         let make s = mkName $ s <> nameStr <> nameBase var in
-        (make "TestLog", make "TestLogCon", make "testfill")
-  genLogs t vars logTypeNames logConNames
+        (make "TestLog", make "TestLogCon", make "TestSkelCon", make "testfill")
+  genLogs t vars logTypeNames logConNames skelConNames
   substLogDecs vars logTypeNames
-  res <- genRes (ConT <$> logTypeNames) vars t
-  genFill t vars fillNames logConNames
   let subst = applySubstitution $ Map.fromList $ zip vars (ConT <$> logTypeNames)
-  genMonoType (length params) monoTypeName monoTypeConName fillNames res (subst t)
+  genFill t vars fillNames logConNames
+  genMonoType (length params) monoTypeName monoTypeConName fillNames (subst t)
   genMonoFun (length params) name monoName monoTypeName monoTypeConName (subst returnType)
-  concat <$> sequence [getLogDecs, getResDecs, getFillDecs, getDecs]
+  concat <$> sequence [getLogDecs, getFillDecs, getDecs]
   where
     -- reifyType for template-haskell >= 2.11 <= 2.15
     reifyType name = reify name <&> \(VarI _ t _) -> t
@@ -50,21 +49,21 @@ monomorphic name = do
     monoTypeName = mkName $ "Mono" <> nameStr
     monoTypeConName = mkName $ "MonoC" <> nameStr
 
-genLogs :: Type -> [Name] -> [Name] -> [Name] -> Q ()
-genLogs t vars typeNames conNames =
-  mapM_ go $ zip3 vars typeNames conNames
+genLogs :: Type -> [Name] -> [Name] -> [Name] -> [Name] -> Q ()
+genLogs t vars typeNames logConNames skelConNames =
+  mapM_ go $ zip4 vars typeNames logConNames skelConNames
   where
-    go (a, typeName, conName) = do
+    go (a, typeName, logConName, skelConName) = do
       log <- logt a t
       putLogDec (a, a, []) $
-          DataD [] typeName [] Nothing [mkConD conName [log]]
+          DataD [] typeName [] Nothing
+          [mkConD logConName [log], mkConD skelConName []]
           [DerivClause Nothing [ConT ''Eq, ConT ''Show, ConT ''Generic]]
-      putDecs =<< [d| instance CoArbitrary $(conT typeName) |]
-
-genRes :: [Type] -> [Name] -> Type -> Q Type
-genRes logs vars t = do
-  let subst = applySubstitution . Map.fromList . zip vars
-  residual vars (subst logs) id t <&> subst (repeat $ TupleT 0)
+      putDecs =<<
+        [d| instance CoArbitrary $(conT typeName)
+            instance Arbitrary $(conT typeName) where
+              arbitrary = pure $(conE skelConName)
+          |]
 
 genFill :: Type -> [Name] -> [Name] -> [Name] -> Q ()
 genFill t vars fillNames conNames =
@@ -77,13 +76,13 @@ genFill t vars fillNames conNames =
         [clause [varP x] (normalB $ fill a t (varE x) (conE conName)) []]
       putFillDec (a, fillName, []) fillDec
 
-genMonoType :: Int -> Name -> Name -> [Name] -> Type -> Type -> Q ()
-genMonoType numArgs monoTypeName monoTypeConName fillNames resType t = do
+genMonoType :: Int -> Name -> Name -> [Name] -> Type -> Q ()
+genMonoType numArgs monoTypeName monoTypeConName fillNames t = do
   x <- newName "x"
   instDec <-
     [d|
      instance Arbitrary $(conT monoTypeName) where
-       arbitrary = $fills <$> (arbitrary :: Gen $(pure resType))
+       arbitrary = $fills <$> (arbitrary :: Gen $(pure t))
      instance Show $(conT monoTypeName) where
        show $(conP monoTypeConName [varP x]) = $(showMono x)
      |]
@@ -150,86 +149,12 @@ logCon a (typeName, args) =
       putDecs =<< [d| instance CoArbitrary $(conT logTypeName) |]
       conT logTypeName
 
--- | Replace all the type variables that are not strictly positive by
--- their corresponding log types.
-residual :: [Name] -- ^ All the type variables a, b, c, ...
-         -> (Type -> Type) -- ^ See 'resCon'
-         -> (Type -> Type) -- ^ See 'resCon'
-         -> Type -- ^ The type t
-         -> Q Type
-residual as substLog substArg = \case
-  t@(VarT _) -> pure t
-  t@(ConT _) -> pure t
-  t@(TupleT 0) -> pure t
-  t@(AppT (AppT ArrowT arg) ret) ->
-    [t| $(pure $ substLog arg) ->
-        $(residual as substLog substArg ret) |]
-  t@(AppT _ _) -> do
-    let (constr, params) = flattenApps t
-    case constr of
-      TupleT _ -> mkTupleT <$> traverse (residual as substLog substArg) params
-      ListT -> let [param] = params in [t| [$(residual as substLog substArg param)] |]
-      ConT typeName -> resCon as substLog substArg (typeName, params)
-      _ -> fail "Not supported"
-  _ -> fail "Not supported"
-
-resCon :: [Name] -> (Type -> Type) -> (Type -> Type) -> (Name, [Type]) -> Q Type
-resCon as substLog substArg (typeName, args) =
-  getResTypeName (typeName, args) >>= \case
-    Just name -> pure $ foldl AppT (ConT name) args
-    Nothing -> do
-      resType <- resTypeRequired as (typeName, args) >>= \case
-        True -> new
-        False -> conT typeName
-      resArgs <- traverse (residual as substLog substArg) args
-      pure $ foldl AppT resType resArgs
-  where
-    new = do
-      info <- reifyDT typeName
-      let argsSubsted = substArg <$> args
-      resTypeName <- mkResTypeName (typeName, argsSubsted)
-      let typeVars = info & datatypeVars <&> tvName
-      constr <- residualConstructor info typeVars
-      let dec = DataD [] resTypeName (plainTV <$> typeVars) Nothing constr
-              [DerivClause Nothing (ConT <$> [''Show, ''Generic])]
-      putResDec (typeName, argsSubsted) dec
-      resInfo <- normalizeDec dec
-      let ctx = traverse (\a -> [t| Arbitrary $(varT a) |]) typeVars
-      let typ = appT (conT ''Arbitrary) $
-                  foldl appT (conT resTypeName) (varT <$> typeVars)
-      let monoType = foldl appT (conT typeName) (typeVars $> [t| () |])
-      let f = toRes info resInfo
-      let dec = funD 'arbitrary
-              [clause [] (normalB [| (arbitrary :: Gen $monoType) >>= $f |]) []]
-      putDecs . pure =<< instanceD ctx typ [dec]
-      conT resTypeName
-    residualConstructor info typeVars = do
-      let substLog' = applySubstitution $ Map.fromList $ zip typeVars (substLog <$> args)
-      let substArg' = applySubstitution $ Map.fromList $ zip typeVars (substArg <$> args)
-      forM (info & datatypeCons) $ \con -> do
-        fields <- traverse (residual typeVars substLog' substArg') (con & constructorFields)
-        name <- newUniqueName $ (con & constructorName & nameBase) <> "ResC"
-        pure $ mkConD name fields
-    toRes info resInfo = do
-      x <- newName "x"
-      lamE [varP x] $ caseE (varE x) $ makeBranch <$> zip
-        (info & datatypeCons) (resInfo & datatypeCons <&> constructorName)
-    -- C x y z -> pure Cres <*> arbitrary <*> arbitrary <*> arbitrary
-    makeBranch (con, resConName) = do
-      let fields = con & constructorFields
-      let conName = con & constructorName
-      let body = foldl
-            (\x y -> [| $x <*> $y |])
-            [| pure $(conE resConName) |]
-            (fields $> [| arbitrary |])
-      match (conP conName (fields $> wildP)) (normalB body) []
-
 fill :: Name -- ^ The type variable a
      -> Type -- ^ The type t
      -> Q Exp -- ^ The skeleton e
      -> Q Exp -- ^ The label prefix f
      -> Q Exp
-fill a (VarT b) e f | a == b = [| $f $e |]
+fill a (VarT b) e f | a == b = [| $f () |]
 fill a (VarT b) e f = e
 fill a (ConT c) e f = e
 fill a (TupleT 0) e f = [| () |]
@@ -275,23 +200,19 @@ fillCon (a, typeName, args) e f =
       info <- reifyDT typeName
       logInfo <- getLogDec (a, typeName, args)
         >>= maybe (pure info) normalizeDec
-      resInfo <- getResDec (typeName, args)
-        >>= maybe (pure info) normalizeDec
-      isLast <- isLastTV a
       ve <- newName "e"
       vf <- newName "f"
       let typeVars = tvName <$> datatypeVars info
       let subst = applySubstitution $ Map.fromList $ zip typeVars args
-      body <- caseE (varE ve) $ makeBranch vf <$> zip3
-        ((if isLast then info else resInfo) & datatypeCons & subst)
+      body <- caseE (varE ve) $ makeBranch vf <$> zip
+        (info & datatypeCons & subst)
         (logInfo & datatypeCons <&> constructorName)
-        (resInfo & datatypeCons <&> constructorName)
       pure $ FunD fillName [Clause [VarP ve, VarP vf] (NormalB body) []]
     -- C : t -> u -> v -> D
-    -- Cres x y z ->
+    -- C x y z ->
     -- let r = fill a (t, u, v) (x, y, z) (f . Clog) in
     -- C (proj1 r) (proj2 r) (proj3 r)
-    makeBranch vf (con, logConName, resConName) = do
+    makeBranch vf (con, logConName) = do
       let fields = con & constructorFields
       let conName = con & constructorName
       vars <- sequence (fields $> newName "x")
@@ -305,7 +226,7 @@ fillCon (a, typeName, args) e f =
       let body = [| let $(varP r) = $re in
                      $(mkConE conName (length fields) (varE r))
                   |]
-      match (conP resConName (varP <$> vars)) (normalB body) []
+      match (conP conName (varP <$> vars)) (normalB body) []
 
 instance CoArbitrary Void where
   coarbitrary = absurd
