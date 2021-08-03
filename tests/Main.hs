@@ -5,6 +5,7 @@
 module Main where
 
 import qualified StrictlyPositive
+import GHC.Generics (Generic)
 import Text.Show.Functions
 import Test.PolyCheck.TH (monomorphic)
 import Test.QuickCheck hiding (monomorphic)
@@ -43,9 +44,10 @@ prop3 :: (Eq a, Eq b) => [(a, b)] -> Bool
 prop3 l = l == reverse (reverse l)
 
 data Bar a = Bar1 (a -> a) | Bar2 (a -> a)
-  deriving (Show)
+  deriving (Show, Generic)
 instance (CoArbitrary a, Arbitrary a) => Arbitrary (Bar a) where
   arbitrary = oneof [Bar1 <$> arbitrary, Bar2 <$> arbitrary]
+instance (CoArbitrary a, Arbitrary a) => CoArbitrary (Bar a)
 
 data Foo a b c = Foo (Bar a) (Bar (Maybe a)) (c -> c)
   deriving (Show)
