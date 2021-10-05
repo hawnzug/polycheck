@@ -27,6 +27,12 @@ instance TypeSubstitution Dec where
       f (NormalC _ bts) = bts >>= freeVariables . snd
       f _ = error "TypeSubstitution: not a normal constructor"
 
+data Emptiness = Empty Exp | NonEmpty Exp
+
+emptyB :: Emptiness -> Bool
+emptyB (Empty _) = True
+emptyB _ = False
+
 type Key = (Name, Name, [Type])
 
 data State = State
@@ -39,7 +45,7 @@ data State = State
   , fillm :: Map Key Dec
   , tvOccur :: Map Name [Bool]
   , tvSP :: Map Name [Bool]
-  , emptiness :: Map Name Bool
+  , emptiness :: Map Name Name
   }
 
 qStateInit :: Name -> String -> Q ()
@@ -86,13 +92,9 @@ getDatatypeInfo name =
 -- 'getDatatypeInfo' to lookup those types maintained by the global state.
 reifyDT :: Name -> Q DatatypeInfo
 reifyDT name = getDatatypeInfo name
-  >>= maybe (reifyDatatypePrim name) pure
+  >>= maybe (reifyDatatype name) pure
   >>= resolveInfo
   where
-    reifyDatatypePrim name = reify name >>= \case
-      -- Assuming all primitive types are nonempty
-      PrimTyConI{} -> reifyDatatype ''Bool
-      _ -> reifyDatatype name
     resolveInfo info = do
       let cons = info & datatypeCons
       cons' <- traverse resolveFields cons
@@ -179,12 +181,17 @@ putTvSP k v = do
   Just s@State{tvSP} <- qGetQ
   qPutQ $ s{tvSP = Map.insert k v tvSP}
 
-getEmptiness :: Name -> Q (Maybe Bool)
+getEmptiness :: Name -> Q (Maybe Name)
 getEmptiness k = do
   Just s@State{emptiness} <- qGetQ
   pure $ Map.lookup k emptiness
 
-putEmptiness :: Name -> Bool -> Q ()
+putEmptiness :: Name -> Name -> Q ()
 putEmptiness k v = do
   Just s@State{emptiness} <- qGetQ
   qPutQ $ s{emptiness = Map.insert k v emptiness}
+
+deleteEmptiness :: Name -> Q ()
+deleteEmptiness k = do
+  Just s@State{emptiness} <- qGetQ
+  qPutQ $ s{emptiness = Map.delete k emptiness}

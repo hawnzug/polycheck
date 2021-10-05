@@ -39,8 +39,9 @@ main = do
   let empty qt = do
         t <- qt
         isEmpty t >>= \case
-          True -> pure ()
-          False -> fail $ pprint t <> ": nonempty"
+          Empty f -> do
+            [d| _ = $(pure f) :: $qt -> Void |]
+          NonEmpty e -> fail $ pprint t <> ": nonempty"
   let a = varT na
 
   occ [t| T2 $a |]
@@ -68,13 +69,13 @@ main = do
   neg [t| Const (T0 $a) $a |]
   neg [t| Either $a (Maybe (T1 (Maybe $a))) |]
 
-  empty [t| Void |]
-  empty [t| () -> Void |]
-  empty [t| Int -> Void |]
-  empty [t| (Bool, Void) |]
-  empty [t| ((Int, Int), Void) |]
-  empty [t| (Void, [Void]) |]
-  empty [t| Either Void Void |]
-  empty [t| T1 Void |]
-
-  pure []
+  concat <$> traverse empty
+    [ [t| Void |]
+    , [t| () -> Void |]
+    , [t| Double -> Float -> Char -> Void |]
+    , [t| (Bool, Void) |]
+    , [t| ((Int, Int), Void) |]
+    , [t| (Void, [Void]) |]
+    , [t| Either Void Void |]
+    , [t| T1 Void |]
+    ]
