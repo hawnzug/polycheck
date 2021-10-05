@@ -1,5 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 module Test.PolyCheck.TH where
 
 import Test.PolyCheck.TH.State
@@ -15,9 +17,10 @@ import Language.Haskell.TH.Datatype
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Void (Void, absurd)
-import GHC.Generics (Generic)
-import Test.QuickCheck hiding (monomorphic)
 import Data.Traversable (for)
+import GHC.Generics (Generic)
+import Test.SmallCheck
+import Test.SmallCheck.Series
 
 -- | Monomorphise a polymorphic function so that it can be tested by QuickCheck.
 --
@@ -59,10 +62,14 @@ genLogs t vars typeNames logConNames skelConNames =
           DataD [] typeName [] Nothing
           [mkConD logConName [log], mkConD skelConName []]
           [DerivClause Nothing [ConT ''Eq, ConT ''Show, ConT ''Generic]]
+      f <- newName "f"
+      x <- newName "x"
       putDecs =<<
-        [d| instance CoArbitrary $(conT typeName)
-            instance Arbitrary $(conT typeName) where
-              arbitrary = pure $(conE skelConName)
+        [d| instance Monad m => CoSerial m $(conT typeName) -- where
+              -- coseries rs = newtypeAlts rs >>- \ $(varP f) ->
+              --   pure $ \ $(conP logConName [varP x]) -> $(varE f) $(varE x)
+            instance Monad m => Serial m $(conT typeName) where
+              series = cons0 $(conE skelConName)
           |]
 
 genFill :: Type -> [Name] -> [Name] -> [Name] -> Q ()
@@ -81,8 +88,8 @@ genMonoType numArgs monoTypeName monoTypeConName fillNames t = do
   x <- newName "x"
   instDec <-
     [d|
-     instance Arbitrary $(conT monoTypeName) where
-       arbitrary = $fills <$> (arbitrary :: Gen $(pure t))
+     instance Monad m => Serial m $(conT monoTypeName) where
+       series = ($fills :: $(pure t) -> $(conT monoTypeName)) <$> series
      instance Show $(conT monoTypeName) where
        show $(conP monoTypeConName [varP x]) = $(showMono x)
      |]
@@ -146,7 +153,7 @@ logCon a (typeName, args) =
       putLogDec (a, typeName, args) $
         DataD [] logTypeName [] Nothing logCons
         [DerivClause Nothing (ConT <$> [''Eq, ''Show, ''Generic])]
-      putDecs =<< [d| instance CoArbitrary $(conT logTypeName) |]
+      putDecs =<< [d| instance Monad m => CoSerial m $(conT logTypeName) |]
       conT logTypeName
 
 fill :: Name -- ^ The type variable a
@@ -175,10 +182,10 @@ fill a t@(AppT _ _) e f = do
       x <- newName "x"
       vf <- newName "f"
       let [param] = params
-      let r = fill a param (varE x) [| $(varE vf) . ListLogA |]
+      let r = fill a param (varE x) [| $(varE vf) . ListLog . Left |]
       [| let
            g [] $(varP vf) = []
-           g ($(varP x):xs) $(varP vf) = $r : g xs ($(varE vf) . ListLogB)
+           g ($(varP x):xs) $(varP vf) = $r : g xs ($(varE vf) . ListLog . Right)
          in g $e $f
        |]
     ConT typeName -> fillCon (a, typeName, params) e f
@@ -228,8 +235,5 @@ fillCon (a, typeName, args) e f =
                   |]
       match (conP conName (varP <$> vars)) (normalB body) []
 
-instance CoArbitrary Void where
-  coarbitrary = absurd
-
-data ListLog a = ListLogA a | ListLogB (ListLog a) deriving (Eq, Show, Generic)
-instance (CoArbitrary a) => CoArbitrary (ListLog a)
+newtype ListLog a = ListLog (Either a (ListLog a)) deriving (Eq, Show, Generic)
+instance (Monad m, CoSerial m a) => CoSerial m (ListLog a)

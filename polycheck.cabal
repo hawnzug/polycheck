@@ -20,7 +20,7 @@ library
     , template-haskell
     , th-abstraction
     , containers
-    , QuickCheck
+    , smallcheck
   default-language: Haskell2010
   default-extensions:
     LambdaCase
@@ -39,4 +39,4 @@ test-suite test
       base == 4.*
     , polycheck
     , template-haskell
-    , QuickCheck
+    , smallcheck
