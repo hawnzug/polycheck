@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -11,6 +12,7 @@ import Test.PolyCheck.TH (monomorphic)
 import Test.SmallCheck
 import Test.SmallCheck.Drivers
 import Control.Monad
+import Data.IORef
 
 applyn :: Int -> a -> (a -> a) -> a
 applyn 0 x f = x
@@ -41,13 +43,20 @@ $(monomorphic 'prop_map)
 $(monomorphic 'prop_takeWhile)
 $(monomorphic 'prop_zipWith)
 
+smallCheck' :: Testable IO a => Depth -> a -> IO Integer
+smallCheck' d prop = do
+  numCases <- newIORef 0
+  smallCheckWithHook d (\_ -> modifyIORef' numCases (+1)) prop
+  readIORef numCases
+
 main :: IO ()
 main = do
-  smallCheck 5 (prop_nat @Int)
-  smallCheck 5 prop_nat_mono
-  smallCheck 5 (prop_map @Int @Int)
-  smallCheck 5 prop_map_mono
-  smallCheck 5 (prop_takeWhile @Int)
-  smallCheck 5 prop_takeWhile_mono
-  -- smallCheck 2 (prop_zipWith @Int @Int @Int)
-  smallCheck 5 prop_zipWith_mono
+  run (prop_nat @Int) prop_nat_mono
+  run (prop_map @Int @Int) prop_map_mono
+  run (prop_takeWhile @Int) prop_takeWhile_mono
+  -- run (prop_zipWith @Int @Int @Int) prop_zipWith_mono
+  where
+    run p p' = do
+      m <- smallCheck' 5 p
+      n <- smallCheck' 5 p'
+      print (m, n)
