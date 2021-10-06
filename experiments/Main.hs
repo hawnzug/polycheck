@@ -9,6 +9,7 @@ import Test.PolyCheck.TH (monomorphic)
 import Test.QuickCheck hiding (monomorphic)
 import qualified Test.QuickCheck as QC
 import Control.Monad
+import Text.Printf (printf)
 
 applyn :: Int -> a -> (a -> a) -> a
 applyn 0 x f = x
@@ -47,16 +48,24 @@ numTestsFail prop = do
 
 main :: IO ()
 main = do
-  printTotal $(QC.monomorphic 'prop_nat) prop_nat_mono
-  printTotal $(QC.monomorphic 'prop_map) prop_map_mono
-  printTotal $(QC.monomorphic 'prop_takeWhile) prop_takeWhile_mono
-  printTotal $(QC.monomorphic 'prop_zipWith) prop_zipWith_mono
+  (stats, _:qc:_, _:pc:_) <- unzip3 <$> sequence
+    [ run $(QC.monomorphic 'prop_nat) prop_nat_mono
+    , run $(QC.monomorphic 'prop_map) prop_map_mono
+    , run $(QC.monomorphic 'prop_takeWhile) prop_takeWhile_mono
+    , run $(QC.monomorphic 'prop_zipWith) prop_zipWith_mono
+    ]
+  writeFile "../results/quickcheck.txt" $ unlines stats
+  writeFile "../results/quickcheck-nums.txt" $ unlines [qc, pc]
   where
-    printTotal p p' = do
+    run p p' = do
       m <- numTestsFail p
       n <- numTestsFail p'
-      print (calc m, calc n)
-    calc xs = (avg, dev)
+      let (avg0, dev0) = calc m
+      let (avg1, dev1) = calc n
+      pure (printf "%.2f(%.2f) %.2f(%.2f)" avg0 dev0 avg1 dev1,
+            unwords $ show <$> m,
+            unwords $ show <$> n)
+    calc xs = (avg, dev :: Float)
       where
         nums = fromIntegral <$> xs
         n = fromIntegral $ length nums
