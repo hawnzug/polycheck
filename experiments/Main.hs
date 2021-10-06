@@ -51,12 +51,15 @@ smallCheck' d prop = do
 
 main :: IO ()
 main = do
-  run (prop_nat @Int) prop_nat_mono
-  run (prop_map @Int @Int) prop_map_mono
-  run (prop_takeWhile @Int) prop_takeWhile_mono
-  -- run (prop_zipWith @Int @Int @Int) prop_zipWith_mono
+  sequence
+    [ run (prop_nat @Int) prop_nat_mono
+    , run (prop_map @Int @Int) prop_map_mono
+    , run (prop_takeWhile @Int) prop_takeWhile_mono
+    -- , run (prop_zipWith @Int @Int @Int) prop_zipWith_mono
+    ]
+  >>= writeFile "../results/smallcheck.txt" . unlines
   where
     run p p' = do
       m <- smallCheck' 5 p
       n <- smallCheck' 5 p'
-      print (m, n)
+      pure $ unwords $ show <$> [m, n]
