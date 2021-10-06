@@ -26,8 +26,8 @@ swap2 xs = xs
 swap2' :: [a] -> [a]
 swap2' = reverse . swap2 . reverse
 
-prop_map :: Eq b => (a -> b) -> [a] -> Property
-prop_map f xs = collect (length xs) $ map f (swap2 xs) == map f xs
+prop_map :: Eq b => (a -> b) -> [a] -> Bool
+prop_map f xs = map f (swap2 xs) == map f xs
 
 prop_takeWhile :: Eq a => (a -> Bool) -> [a] -> Bool
 prop_takeWhile f xs = takeWhile f (swap2' xs) == takeWhile f xs
@@ -39,22 +39,11 @@ $(monomorphic 'prop_map)
 $(monomorphic 'prop_takeWhile)
 $(monomorphic 'prop_zipWith)
 
-numTestsFail' :: Testable prop => prop -> IO ()
-numTestsFail' prop = do
-  let cases = 10000
-  let printList xs = putStrLn $ unwords $ fmap show xs
-  (nums, lens) <- fmap unzip $ replicateM cases $ do
-    result <- quickCheckWithResult stdArgs{chatty=False, maxShrinks=0} prop
-    pure (numTests result, read $ head $ failingLabels result :: Int)
-  printList nums
-  printList lens
-
-numTestsFail :: Testable prop => prop -> IO Int
-numTestsFail prop =
-  sum <$> replicateM 10000
-  (numTests <$> quickCheckWithResult
-   stdArgs{chatty=False}
-   prop)
+numTestsFail :: Testable prop => prop -> IO [Int]
+numTestsFail prop = do
+  replicateM 10000 $
+    numTests <$>
+    quickCheckWithResult stdArgs{chatty=False} prop
 
 main :: IO ()
 main = do
@@ -66,4 +55,11 @@ main = do
     printTotal p p' = do
       m <- numTestsFail p
       n <- numTestsFail p'
-      print (m, n)
+      print (calc m, calc n)
+    calc xs = (avg, dev)
+      where
+        nums = fromIntegral <$> xs
+        n = fromIntegral $ length nums
+        avg = sum nums / n
+        dev = sqrt $ sum (map (\x -> (x - avg) ^ 2) nums) / n
+
