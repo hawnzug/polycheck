@@ -48,14 +48,14 @@ numTestsFail prop = do
 
 main :: IO ()
 main = do
-  (stats, _:qc:_, _:pc:_) <- unzip3 <$> sequence
+  (stats, qc, pc) <- unzip3 <$> sequence
     [ run $(QC.monomorphic 'prop_nat) prop_nat_mono
     , run $(QC.monomorphic 'prop_map) prop_map_mono
     , run $(QC.monomorphic 'prop_takeWhile) prop_takeWhile_mono
     , run $(QC.monomorphic 'prop_zipWith) prop_zipWith_mono
     ]
   writeFile "../results/quickcheck.txt" $ unlines stats
-  writeFile "../results/quickcheck-nums.txt" $ unlines [qc, pc]
+  writeFile "../results/quickcheck-nums.txt" $ unlines (qc <> pc)
   where
     run p p' = do
       m <- numTestsFail p
